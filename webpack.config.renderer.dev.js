@@ -15,6 +15,7 @@ import merge from 'webpack-merge';
 import { spawn, execSync } from 'child_process';
 import baseConfig from './webpack.config.base';
 import CheckNodeEnv from './internals/scripts/CheckNodeEnv';
+// const MonacoWebpackPlugin = require('monaco-editor-webpack-plugin');
 
 CheckNodeEnv('development');
 
@@ -31,11 +32,25 @@ const requiredByDLLConfig = module.parent.filename.includes(
  */
 if (!requiredByDLLConfig && !(fs.existsSync(dll) && fs.existsSync(manifest))) {
   console.log(
-    chalk.black.bgYellow.bold(
-      'The DLL files are missing. Sit back while we build them for you with "yarn build-dll"'
+    chalk.black.bgYellow.bold(`Some DLL files are missing and need generated.
+No worries, go grab a coffee while we build them for you with "npm run build-dll" and "npm run package"
+Lucky for you, we only have to do this once and then things are a lot faster.`)
+  );
+  try {
+    execSync('npm run build-dll', {stdio: 'inherit'});
+    execSync('npm run package', {stdio: 'inherit'});
+  } catch(e) {
+    console.log(
+      chalk.black.bgYellow.bold(
+        'If you see errors relating to codesign, you can ignore these for now.'
+      )
+    );
+  }
+  console.log(
+    chalk.white.bgGreen.bold(
+      'All set! Now you can re-try "npm run dev"...'
     )
   );
-  execSync('yarn build-dll');
 }
 
 export default merge.smart(baseConfig, {
@@ -49,6 +64,11 @@ export default merge.smart(baseConfig, {
     'react-hot-loader/patch',
     `webpack-dev-server/client?http://localhost:${port}/`,
     'webpack/hot/only-dev-server',
+    // 'monaco-editor/esm/vs/editor/editor.worker.js',
+    // 'monaco-editor/esm/vs/language/json/json.worker',
+		// 'monaco-editor/esm/vs/language/css/css.worker',
+	  // 'monaco-editor/esm/vs/language/html/html.worker',
+		// 'monaco-editor/esm/vs/language/typescript/ts.worker',
     path.join(__dirname, 'app/index.js')
   ],
 
@@ -56,7 +76,10 @@ export default merge.smart(baseConfig, {
     publicPath: `http://localhost:${port}/dist/`,
     filename: 'renderer.dev.js'
   },
-
+  // resolve: {
+  //   extensions: ['.js', '.jsx', '.json'],
+  //   alias: { 'react-monaco-editor': MonacoEditorSrc }
+  // },
   module: {
     rules: [
       {
@@ -114,7 +137,7 @@ export default merge.smart(baseConfig, {
       },
       // SASS support - compile all .global.scss files and pipe it to style.css
       {
-        test: /\.global\.(scss|sass)$/,
+        test: /\.global\.(scss|sass|styl)$/,
         use: [
           {
             loader: 'style-loader'
@@ -132,7 +155,7 @@ export default merge.smart(baseConfig, {
       },
       // SASS support - compile all other .scss files and pipe it to style.css
       {
-        test: /^((?!\.global).)*\.(scss|sass)$/,
+        test: /^((?!\.global).)*\.(scss|sass|styl)$/,
         use: [
           {
             loader: 'style-loader'
@@ -148,6 +171,9 @@ export default merge.smart(baseConfig, {
           },
           {
             loader: 'sass-loader'
+          },
+          {
+            loader: 'stylus-loader'
           }
         ]
       },
@@ -192,13 +218,14 @@ export default merge.smart(baseConfig, {
       // SVG Font
       {
         test: /\.svg(\?v=\d+\.\d+\.\d+)?$/,
-        use: {
+        use: [
+          {
           loader: 'url-loader',
           options: {
             limit: 10000,
             mimetype: 'image/svg+xml'
           }
-        }
+        }]
       },
       // Common Image Formats
       {
@@ -216,7 +243,10 @@ export default merge.smart(baseConfig, {
           manifest: require(manifest),
           sourceType: 'var'
         }),
-
+    // new webpack.ProvidePlugin({
+    //   $: 'jquery',
+    //   jQuery: 'jquery'
+    // }),
     new webpack.HotModuleReplacementPlugin({
       // multiStep: true
     }),
@@ -241,7 +271,8 @@ export default merge.smart(baseConfig, {
 
     new webpack.LoaderOptionsPlugin({
       debug: true
-    })
+    }),
+    // new MonacoWebpackPlugin(),
   ],
 
   node: {

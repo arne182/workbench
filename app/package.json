@@ -1,8 +1,8 @@
 {
   "name": "workbench",
   "productName": "Workbench",
-  "version": "0.0.35",
-  "description": "The Openpilot Workbench is to help people fix problems with EON, Openpilot, etc.",
+  "version": "0.2.0-alpha2",
+  "description": "Workbench is a desktop app for managing Openpilot and EON.",
   "main": "./main.prod.js",
   "author": {
     "name": "jfrux",
@@ -11,13 +11,15 @@
   },
   "scripts": {
     "electron-rebuild": "node -r babel-register ../internals/scripts/ElectronRebuild.js",
-    "postinstall": "yarn electron-rebuild"
+    "postinstall": "npm run electron-rebuild"
   },
   "license": "MIT",
   "dependencies": {
-    "node-pty-prebuilt": "^0.7.6",
     "babel-register": "^6.26.0",
     "bufferutil": "^4.0.0",
+    "net-ping": "^1.2.3",
+    "node-pty-prebuilt": "^0.7.6",
+    "raw-socket": "^1.6.4",
     "utf-8-validate": "^5.0.1",
     "winattr": "^2.0.0",
     "zeromq": "^5.1.0"

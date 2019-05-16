@@ -1,22 +1,29 @@
 /* eslint-disable no-use-before-define */
 import React from 'react';
+import defaultShell from '../main/default-shell';
 import PropTypes from 'prop-types';
 import { Terminal } from 'xterm';
-import { remote, clipboard } from 'electron';
+import electron from 'electron';
 import { connect } from 'react-redux';
 import { bindActionCreators } from 'redux';
-const { app } = remote;
+import settings from 'electron-settings';
 import path from 'path';
+import * as uiActions from '../actions/ui_actions';
+import * as terminalActions from '../actions/terminal_actions';
+import * as types from '../constants/terminal_action_types';
 // import * as attach from 'xterm/lib/addons/attach/attach';
-import * as attach from '../addons/attach';
+// import * as attach from '../addons/attach';
 import * as fit from 'xterm/lib/addons/fit/fit';
 import * as webLinks from 'xterm/lib/addons/webLinks/webLinks';
 import * as fullscreen from 'xterm/lib/addons/fullscreen/fullscreen';
 import * as search from 'xterm/lib/addons/search/search';
 import * as winptyCompat from 'xterm/lib/addons/winptyCompat/winptyCompat';
+const fs = require('fs');
 import processClipboard from '../utils/paste';
+const { ipcRenderer, remote, clipboard } = electron;
+const { app } = remote;
 
-Terminal.applyAddon(attach);
+// Terminal.applyAddon(attach);
 Terminal.applyAddon(fit);
 Terminal.applyAddon(webLinks);
 Terminal.applyAddon(search);
@@ -25,12 +32,13 @@ Terminal.applyAddon(winptyCompat);
 class ReactTerminal extends React.Component {
   constructor(props) {
     super(props);
-    this.HOST = `127.0.0.1:9788`;
+    this.HOST = `127.0.0.1:${app.TERMINAL_PORT}`;
     this.SOCKET_URL = `ws://${this.HOST}/terminals/`;
     this.failures = 0;
     this.interval = null;
     this.fontSize = 16;
     this.onOpen = this.onOpen.bind(this);
+    this.handlePtyMessage = this.handlePtyMessage.bind(this);
     this.onWindowResize = this.onWindowResize.bind(this);
     this.onWindowPaste = this.onWindowPaste.bind(this);
     this.onTermRef = this.onTermRef.bind(this);
@@ -60,13 +68,10 @@ class ReactTerminal extends React.Component {
     this.fitResize();
   }
   onWindowPaste(e) {
-    if (!this.props.isTermActive) return;
-    console.warn("Pasted");
-    const processed = processClipboard();
-    if (processed) {
-      e.preventDefault();
-      e.stopPropagation();
-      this.term.send(processed);
+    console.warn('Pasted',e);
+    let paste = (e.clipboardData || window.clipboardData).getData('text');
+    if (e.path[0].className === 'xterm-helper-textarea') {
+      this.sendCommand(paste);
     }
   }
   onMouseUp(e) {
@@ -85,6 +90,9 @@ class ReactTerminal extends React.Component {
     this.term.write(data);
   }
   focus() {
+    this.setState({
+      focused: true
+    });
     this.term.focus();
   }
   clear() {
@@ -109,8 +117,18 @@ class ReactTerminal extends React.Component {
     // Has Mousetrap flagged this event as a command?
     return !e.catched;
   }
+  onContextMenu = (event, test) => {
+    const targetClass = event.target.className;
+    // console.warn("target",);
+    if (targetClass === 'xterm-cursor-layer') {
+      const selection = window.getSelection().toString();
+      // const {props: {uid}} = this.getActiveTerm();
+      console.warn('isTermActive:', this.props.isTermActive);
+      this.props.OPEN_CONTEXTMENU(0, selection);
+    }
+  };
   componentDidMount() {
-    const {props} = this;
+    const { props } = this;
     this.term = new Terminal({
       cursorBlink: true,
       // rows: 3,
@@ -119,48 +137,20 @@ class ReactTerminal extends React.Component {
     this.term.open(this.termRef);
     this.term.webLinksInit();
     this.term.winptyCompatInit();
-    // window.addEventListener('contextmenu', () => {
-    //   const selection = window.getSelection().toString();
-    //   // const {props: {uid}} = this.getActiveTerm();
-    //   // this.props.onContextMenu(uid, selection);
-    // });
+    this.term.setOption('theme', { background: '#0e1011' });
     if (props.term) {
       //We need to set options again after reattaching an existing term
-      Object.keys(this.termOptions).forEach(option => this.term.setOption(option, this.termOptions[option]));
-    }
-    if (this.props.isTermActive) {
-      this.term.focus();
-    }
-
-    this.onOpen(this.termOptions);
-
-    if (props.onTitle) {
-      this.term.on('title', props.onTitle);
+      Object.keys(this.termOptions).forEach(option =>
+        this.term.setOption(option, this.termOptions[option])
+      );
     }
 
-    if (props.onActive) {
-      this.term.on('focus', props.onActive);
-    }
+    window.addEventListener('contextmenu', this.onContextMenu);
 
-    if (props.onData) {
-      this.term.on('data', props.onData);
-    }
-
-    if (props.onResize) {
-      this.term.on('resize', ({cols, rows}) => {
-        props.onResize(cols, rows);
-      });
-    }
-
-    if (props.onCursorMove) {
-      this.term.on('cursormove', () => {
-        e
-        props.onCursorMove(cursorFrame);
-      });
-    }
-    window.addEventListener('resize',() => {
+    window.addEventListener('resize', () => {
       this.term.fit();
     });
+
     window.addEventListener('resize', this.onWindowResize, {
       passive: true
     });
@@ -168,26 +158,49 @@ class ReactTerminal extends React.Component {
     window.addEventListener('paste', this.onWindowPaste, {
       capture: true
     });
+
     this.term.on('resize', ({ cols, rows }) => {
       if (!this.pid) return;
-      fetch(
-        `http://${this.HOST}/terminals/${
-          this.pid
-        }/size?cols=${cols}&rows=${rows}`,
-        { method: 'POST' }
-      );
+      ipcRenderer.send(types.TERMINAL_RESIZE,{ pid: this.pid, cols, rows });
     });
+
     this.term.decreaseFontSize = () => {
       this.term.setOption('fontSize', --this.fontSize);
       this.term.fit();
     };
+
     this.term.increaseFontSize = () => {
       this.term.setOption('fontSize', ++this.fontSize);
       this.term.fit();
     };
     this.fitResize();
-    this._connectToServer();
-    
+    // this.term.attachCustomKeyEventHandler(this.keyboardHandler);
+    // this.term._core.register(this.term.addDisposableListener('key', (key, ev) => {
+    //   const printable = !ev.altKey && !ev.altGraphKey && !ev.ctrlKey && !ev.metaKey;
+  
+    //   if (ev.keyCode === 13) {
+    //     this.term.prompt();
+    //   } else if (ev.keyCode === 8) {
+    //    // Do not delete the prompt
+    //     if (this.term.x > 2) {
+    //       this.term.write('\b \b');
+    //     }
+    //   } else if (printable) {
+    //     this.term.write(key);
+    //   }
+    // }));
+  
+    // this.term._core.register(this.term.addDisposableListener('paste', (data, ev) => {
+    //   this.term.write(data);
+    // }));
+    this.term.on('key', (key, ev) => {
+      console.log(key.charCodeAt(0));
+      if (key.charCodeAt(0) === 13)
+        // this.sendCommand(`\n`);
+      // this.setState({'command':`${this.state.command}${key}`});
+      console.log(this.state.command);
+      this.sendCommand(key);
+    });
     this.term.textarea.onkeydown = e => {
       // console.log(e.keyCode, e.shiftKey, e.ctrlKey, e.altKey);
       // ctrl + shift + metakey + +
@@ -220,99 +233,99 @@ class ReactTerminal extends React.Component {
         this.props.options.close && this.props.options.close();
       }
     };
+    this._connectToServer();
   }
   sendCommand(cmd) {
-    this.socket.send(cmd);
+    console.log(`Sending command to ${this.pid}...\n${cmd}`)
+    ipcRenderer.send(types.TERMINAL_COMMAND,{ pid: this.pid, cmd });
+    // this.setState({'command':``});
   }
   componentWillUnmount() {
     clearTimeout(this.interval);
-    this.socket.close();
-    this.socket = null;
-    ['title', 'focus', 'data', 'resize', 'cursormove'].forEach(type => this.term.off(type));
-
+    ipcRenderer.removeListener(types.TERMINAL_MESSAGE, this.handlePtyMessage);
+    ipcRenderer.send(types.TERMINAL_DISCONNECT,{ pid: this.pid });
+    this.pid = null;
+    
+    ['title', 'focus', 'data', 'resize', 'cursormove'].forEach(type =>
+      this.term.off(type)
+    );
+    window.removeEventListener('contextmenu', this.onContextMenu);
     window.removeEventListener('resize', this.onWindowResize, {
       passive: true
     });
-
     window.removeEventListener('paste', this.onWindowPaste, {
       capture: true
     });
+  }
+  handlePtyMessage(evt, message) {
+    this.term.write(message);
+  }
+  handlePtyError(evt, message) {
+    this.term.write(message);
   }
   render() {
     const { activeCommand, CommandPane } = this.props;
     return (
       <div>
-        {activeCommand && CommandPane && 
-          <div className={"command-box"}>
-            <CommandPane onRunCommand={(command) => { console.warn("Sending command: ",command); this.sendCommand (command); }} />
+        {activeCommand && CommandPane && (
+          <div className={'command-box'}>
+            <CommandPane
+              onRunCommand={command => {
+                console.warn('Sending command: ', command);
+                this.sendCommand(command);
+              }}
+            />
           </div>
-        }
+        )}
         <div ref={this.onTermWrapperRef} className="term_fit term_wrapper">
-          <div
-            ref={this.onTermRef}
-          />
+          <div ref={this.onTermRef} />
         </div>
       </div>
     );
   }
   _connectToServer() {
-    fetch(
-      `http://${this.HOST}/terminals/?cols=${this.term.cols}&rows=${
-        this.term.rows
-      }`,
-      { method: 'POST' }
-    ).then(
-      res => {
-        if (!res.ok) {
-          this.failures += 1;
-          if (this.failures === 2) {
-            this.term.writeln(
-              'There is back-end server found but it returns "' +
-                res.status +
-                ' ' +
-                res.statusText +
-                '".'
-            );
-          }
-          this._tryAgain();
-          return;
-        }
-        res.text().then(processId => {
-          this.pid = processId;
-          this.socket = new WebSocket(this.SOCKET_URL + processId);
-          this.socket.onopen = () => {
-            console.log('CONNECTED TO SHELL');
-            this.term.attach(this.socket);
-            console.warn(process.platform);
-            if (process.platform === 'win32') {
-              const userHome = app.getPath('home');
-              const filePath = path.join(userHome, '.ssh', 'openpilot_rsa');
-            }
+    console.warn("Connecting to shell...",this.term);
+    ipcRenderer.send(types.TERMINAL_CONNECT, {
+      cols: this.term.cols,
+      rows: this.term.rows
+    });
 
-            this.sendCommand(
-              `ssh root@${this.props.eonIp} -p 8022 -i ~/.ssh/openpilot_rsa\r`
-            );
-          };
-          // this.socket.onclose = () => {
-          //   this.term.writeln('Server disconnected!');
-          //   this._connectToServer();
-          // };
-          this.socket.onerror = () => {
-            this.term.writeln('Critical error, restart Workbench!');
-            this._connectToServer();
-          };
-        });
-      },
-      error => {
-        this.failures += 1;
-        if (this.failures === 2) {
-          this.term.writeln('A process failed to start properly.');
-          this.term.writeln('> Restart Workbench and try again.');
-        }
-        console.error(error);
-        this._tryAgain();
+    ipcRenderer.once(types.TERMINAL_CONNECTED,(evt,pid) => {
+      const processId = pid;
+      console.warn("Shell connected!", processId);
+      this.pid = processId;
+      
+      console.warn(process.platform);
+      let filePath;
+      const userHome = app.getPath('home');
+      filePath = path.join(userHome, '.ssh', 'openpilot_rsa');
+
+      let userKeyPath = settings.get('eonSshKeyPath');
+      if (userKeyPath) {
+        filePath = userKeyPath;
       }
-    );
+
+      this.sendCommand(`ssh root@${this.props.eonIp} -p 8022 -i "${filePath}"\r`);
+      // this.socket.onclose = () => {
+      //   this.term.writeln('Server disconnected!');
+      //   this._connectToServer();
+      // };
+      // this.socket.onerror = error => {
+      //   console.error(error);
+      //   this.term.writeln('Critical error, restart Workbench!');
+      //   this._connectToServer();
+      // };
+    });
+    ipcRenderer.on(types.TERMINAL_MESSAGE, this.handlePtyMessage);
+    // ipcRenderer.on(types.TERMINAL_ERROR, (evt, {error}) => {
+    //   this.failures += 1;
+    //   if (this.failures === 2) {
+    //     this.term.writeln('A process failed to start properly.');
+    //     this.term.writeln('> Restart Workbench and try again.');
+    //   }
+    //   console.error(error);
+    //   this._tryAgain();
+    // });
   }
   _tryAgain() {
     clearTimeout(this.interval);
@@ -329,7 +342,7 @@ ReactTerminal.propTypes = {
 };
 
 function mapDispatchToProps(dispatch) {
-  // return bindActionCreators(EonActions, dispatch);
+  return bindActionCreators({...uiActions,...terminalActions},dispatch);
 }
 
 const mapStateToProps = (state, ownProps) => {
@@ -340,10 +353,10 @@ const mapStateToProps = (state, ownProps) => {
   }
   return {
     activeCommand
-  }
+  };
 };
 
 export default connect(
   mapStateToProps,
-  // mapDispatchToProps
+  mapDispatchToProps
 )(ReactTerminal);
